@@ -1,12 +1,11 @@
-"""Graph: executor — dependency-driven parallel scheduling
+"""Graph: executor — single-threaded dependency-driven scheduling
 
-Replaces the old linear PipelineExecutor with topological + ThreadPoolExecutor.
-Nodes execute as soon as all their input Artifacts are ready.
-Independent nodes run in parallel.
+Executes a validated Graph one node at a time in topological order.
+Nodes become ready when all their input Artifacts are resolved;
+ready nodes execute sequentially in deterministic sorted order.
 """
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .model import Graph, GraphNode
@@ -20,14 +19,13 @@ logger = get_logger(__name__)
 
 
 class GraphExecutor:
-    """Executes a validated Graph with dependency-driven parallel scheduling."""
+    """Executes a validated Graph with single-threaded dependency-driven scheduling."""
 
-    def __init__(self, max_workers: int = 8):
-        self.max_workers = max_workers
+    def __init__(self):
         self._registry = get_registry()
 
     def execute(self, graph: Graph) -> dict[str, Any]:
-        """Execute the graph and return final outputs."""
+        """Execute the graph sequentially and return final outputs."""
         if not graph.nodes:
             return {}
 
@@ -53,7 +51,7 @@ class GraphExecutor:
             if spec.output_spec:
                 node_output_keys[nid] = spec.output_spec.key
 
-        completed: set[str] = set()
+        completed: int = 0
         failed: dict[str, str] = {}
         artifacts: dict[str, Artifact] = {}
 
@@ -62,48 +60,45 @@ class GraphExecutor:
             key=lambda nid: graph.nodes[nid].node_name,
         )
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            while ready:
-                # Resolve inputs for ready nodes
-                tasks: dict[str, dict[str, Artifact]] = {}
-                for nid in ready:
-                    resolved = {}
-                    for from_node, from_output, to_input in upstream_map.get(nid, []):
-                        art_key = node_output_keys.get(from_node, from_output)
-                        if art_key in artifacts:
-                            resolved[to_input] = artifacts[art_key]
-                    tasks[nid] = resolved
+        # Single-threaded execution: process one ready node at a time.
+        # After each node completes, any newly unblocked downstream nodes
+        # are appended and the ready list is re-sorted for determinism.
+        while ready:
+            nid = ready.pop(0)
+            gn = graph.nodes[nid]
 
-                # Submit all ready nodes
-                futures = {}
-                for nid in ready:
-                    gn = graph.nodes[nid]
-                    future = pool.submit(
-                        self._execute_node, gn, tasks[nid], context
-                    )
-                    futures[future] = nid
+            # Resolve inputs from upstream artifacts
+            resolved: dict[str, Artifact] = {}
+            for from_node, from_output, to_input in upstream_map.get(nid, []):
+                art_key = node_output_keys.get(from_node, from_output)
+                if art_key in artifacts:
+                    resolved[to_input] = artifacts[art_key]
 
-                ready = []
+            try:
+                artifact = self._execute_node(gn, resolved, context)
+                if artifact:
+                    artifacts[artifact.key] = artifact
+                    context.artifacts[artifact.key] = artifact
+                completed += 1
 
-                for future in as_completed(futures):
-                    nid = futures[future]
-                    try:
-                        artifact = future.result()
-                        if artifact:
-                            artifacts[artifact.key] = artifact
-                            context.artifacts[artifact.key] = artifact
-                        completed.add(nid)
+                # Unblock downstream nodes
+                for ds_id in downstream.get(nid, []):
+                    if ds_id in in_degree:
+                        in_degree[ds_id] -= 1
+                        if in_degree[ds_id] == 0 and ds_id not in failed:
+                            ready.append(ds_id)
 
-                        for ds_id in downstream.get(nid, []):
-                            if ds_id in in_degree:
-                                in_degree[ds_id] -= 1
-                                if in_degree[ds_id] == 0 and ds_id not in completed:
-                                    ready.append(ds_id)
+                # Re-sort for deterministic execution order
+                ready.sort(key=lambda nid: graph.nodes[nid].node_name)
 
-                    except Exception as exc:
-                        failed[nid] = str(exc)
-                        completed.add(nid)
-                        logger.error("Node failed: %s — %s", nid, exc)
+            except Exception as exc:
+                failed[nid] = str(exc)
+                logger.error("Node failed: %s — %s", nid, exc)
+
+                # Unblock downstream nodes so they can report missing inputs
+                for ds_id in downstream.get(nid, []):
+                    if ds_id in in_degree:
+                        in_degree[ds_id] -= 1
 
         # Collect results
         result: dict[str, Any] = {}
@@ -120,7 +115,7 @@ class GraphExecutor:
 
         logger.info(
             "Graph executed: %d/%d nodes, %d failed, %.1fms",
-            len(completed) - len(failed), len(graph.nodes), len(failed), elapsed,
+            completed, len(graph.nodes), len(failed), elapsed,
         )
 
         if failed:

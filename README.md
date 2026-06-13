@@ -3,7 +3,7 @@
 ## 项目简介
 
 **Business Capability Gateway（业务能力网关）** 是一个面向 AI Agent 的轻量级协议网关。
-它不执行任何业务逻辑，只负责插件发现与加载、请求解析与路由、图构建与校验、DAG 并行执行、结果标准化返回。
+它不执行任何业务逻辑，只负责插件发现与加载、请求解析与路由、图构建与校验、依赖驱动的顺序执行、结果标准化返回。
 所有复杂业务能力都封装在插件内部，网关本身对业务一无所知。
 
 ## 核心理念
@@ -21,7 +21,7 @@
 - 基于 Graph DAG 的能力组合
 - 节点注册与协议发现（输入/输出/参数类型约束）
 - 7 层图校验（节点存在性、参数有效性、输入完整性、类型兼容性、循环检测、输出有效性、业务规则）
-- 依赖驱动的并行图执行（ThreadPoolExecutor）
+- 依赖驱动的图执行（拓扑排序 + 单线程顺序调度）
 - Python 沙箱执行（AST 校验 + 受限 builtins + 超时控制）
 - 统一成功/失败响应格式
 
@@ -67,7 +67,7 @@ Sandbox (AST 校验 → restricted __builtins__ → exec → extract result)
 GraphValidator (7 层校验)
   │
   ▼
-GraphExecutor (拓扑排序 → ThreadPoolExecutor 并行调度)
+GraphExecutor (拓扑排序 → 依赖驱动的顺序调度)
   │
   ▼
 Node.execute() → Artifact → downstream Node ... → final output
@@ -183,11 +183,11 @@ result = g.execute()
 
 ## 图执行规则
 
-Graph 是一个有向无环图（DAG），节点通过 Artifact 连接。执行器基于拓扑排序，依赖就绪即可并行执行：
+Graph 是一个有向无环图（DAG），节点通过 Artifact 连接。执行器基于拓扑排序，按依赖关系顺序执行：
 
-- 没有输入边的节点（Source）作为入口同时启动
+- 没有输入边的节点（Source）按名称排序依次启动
 - 每个节点执行完成后的输出（Artifact）传递给下游节点
-- 无依赖关系的节点并行执行（ThreadPoolExecutor）
+- 无依赖关系的节点按名称排序依次执行
 - 有循环依赖的图在验证阶段被拒绝
 - 每个节点只能在同一插件范围内
 

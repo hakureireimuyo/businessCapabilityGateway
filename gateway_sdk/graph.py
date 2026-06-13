@@ -197,7 +197,7 @@ class Graph:
         This is called at the end of an Agent's script. It:
           1. Builds the core.graph.model.Graph from accumulated state
           2. Validates via GraphValidator (7 layers)
-          3. Executes via GraphExecutor (dependency-driven parallel)
+          3. Executes via GraphExecutor (dependency-driven sequential)
           4. Returns a dict of {output_key: raw_data}
         """
         if not self._nodes:
