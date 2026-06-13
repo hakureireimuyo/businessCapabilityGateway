@@ -3,7 +3,8 @@
 ## 项目简介
 
 **Business Capability Gateway（业务能力网关）** 是一个面向 AI Agent 的轻量级协议网关。
-它不执行任何业务逻辑，只负责插件发现与加载、请求解析与路由、图构建与校验、依赖驱动的顺序执行、结果标准化返回。
+它不执行任何业务逻辑，只负责插件发现与加载、脚本沙箱执行、结果标准化返回。
+Agent 将要执行的能力组合编写为 Python 脚本提交给网关，网关在沙箱中安全执行并返回结果——Agent 只能拿到最终业务结果，无法接触中间数据和原始数据。
 所有复杂业务能力都封装在插件内部，网关本身对业务一无所知。
 
 ## 核心理念
@@ -18,11 +19,9 @@
 ## 主要功能
 
 - 插件自动发现与加载
-- 基于 Graph DAG 的能力组合
+- 通过 Python SDK 脚本组合插件能力
 - 节点注册与协议发现（输入/输出/参数类型约束）
-- 即时校验（节点存在、参数合法、输入完备、类型兼容 — 调用即校验）
-- 即时执行（调用即执行，Python 自身执行顺序自然保证依赖 DAG）
-- Python 沙箱执行（AST 校验 + 受限 builtins + 超时控制）
+- 脚本沙箱安全执行（AST 校验 + 受限 builtins + 超时控制）
 - 统一成功/失败响应格式
 
 ## 目录结构
@@ -39,6 +38,7 @@ businessCapabilityGateway/
 ├── docs/                      # 项目说明与开发规范
 ├── gateway_sdk/               # Agent 侧 Python SDK
 ├── plugins/                   # 插件目录
+├── sandbox/                   # 本地测试脚本（直接运行，不走服务）
 ├── tests/                     # 测试
 ├── gateway.py                 # SDK 入口（Agent 直接使用）
 ├── main.py                    # 服务启动/停止入口
@@ -50,22 +50,24 @@ businessCapabilityGateway/
 ## 架构概览
 
 ```
-Agent (Python SDK)
-  │  g = Graph(plugin="amazon")
-  │  products = g.keyword_search(keyword="test")     ← 立即校验 + 执行
-  │  analysis = g.market_analysis(products=products) ← 立即校验 + 执行
-  │  g.output(analysis)
-  │  result = g.execute()  ← 仅收集已标记的输出
-  ▼
-POST /execute (text/plain)
+Agent（外部）
+  │
+  │  1. 编写 Python 脚本（使用 Gateway SDK 的 Graph API）
+  │  2. POST /execute  将脚本以 text/plain 提交
   │
   ▼
-Sandbox (AST 校验 → restricted __builtins__ → exec → extract result)
-  │  │
-  │  └─ exec 过程中：每个 g.xxx() 调用即时校验参数/输入/类型，立即执行 Node
+Gateway Sandbox
+  │
+  ├─ AST 校验        —— 拦截 import / eval / open 等危险操作
+  ├─ exec (受限)     —— 在受限 __builtins__ 下执行整个脚本
+  │   └─ 脚本执行期间：Graph().xxx() 调用即校验并执行 Node
+  └─ 提取 result     —— 从脚本命名空间取出 result 变量
   │
   ▼
-JSON Response {"success": true, "data": {...}}
+Agent  ←  JSON Response  {"success": true, "data": {...}}
+
+Agent 全程只知道：发送了什么脚本、拿到了什么结果。
+中间执行过程对 Agent 完全透明（不可见）。
 ```
 
 ## API 说明
@@ -135,7 +137,7 @@ result = g.execute()
 
 ## SDK 用法示例
 
-### 简单链式图
+### 简单链式
 
 ```python
 from gateway import Graph
@@ -148,7 +150,7 @@ g.output(analysis)
 result = g.execute()
 ```
 
-### 并行分支图
+### 并行分支
 
 ```python
 g = Graph(plugin="amazon")
@@ -160,7 +162,7 @@ g.output(score)
 result = g.execute()
 ```
 
-### 多输出图
+### 多输出
 
 ```python
 g = Graph(plugin="amazon")
@@ -173,16 +175,16 @@ g.output(js)
 result = g.execute()
 ```
 
-## 执行规则
+## 执行机制
 
-Graph 是一个有向无环图（DAG），节点通过 Artifact 连接。SDK 采用**即时执行**模型：
+网关不维护显式的图数据结构，也不做集中式的图校验。图结构由 **Python 自身语法**隐式表达：
 
-- 调用 `g.xxx(...)` 时立即校验参数/输入/类型，校验通过后立即执行 Node
-- 每次调用返回的 `Artifact` 可直接传给下游节点
-- Python 自身的执行顺序自然保证依赖 DAG（下游节点必须先拿到上游的 Artifact 才能调用）
-- 循环依赖在 SDK 层自然无法表达（无法在拿到下游结果前传给上游）
-- `g.output()` 标记最终产出，`g.execute()` 收集已标记的结果
-- 每个节点只能在同一插件范围内
+- Agent 编写的 Python 脚本中，变量赋值和数据传递自然形成节点间的依赖关系（下游节点必须先拿到上游的输出）
+- Python 解释器的执行顺序天然保证 DAG——循环依赖在语法层面就无法表达
+- `g.xxx()` 调用时即时校验参数/输入/类型，校验通过后立即执行 Node
+- `g.output()` 标记最终产出，`g.execute()` 收集已标记结果为 dict
+
+**对 Agent 而言，整个过程是黑盒**：提交一段 Python 脚本 → 拿到成功/失败的 JSON 结果。中间执行了什么节点、数据如何流转，Agent 一概不知。
 
 ## 常见错误码
 
@@ -191,7 +193,7 @@ Graph 是一个有向无环图（DAG），节点通过 Artifact 连接。SDK 采
 - `PLUGIN_NOT_FOUND`：插件不存在
 - `NODE_NOT_FOUND`：节点不存在
 - `INVALID_PARAMS`：参数校验失败
-- `INVALID_GRAPH`：图结构非法（含类型不匹配、循环依赖、未满足输入等）
+- `INVALID_GRAPH`：脚本执行中校验失败（类型不匹配、必填输入未连接、参数不合法等）
 - `EXECUTION_TIMEOUT`：脚本执行超时
 - `INTERNAL_ERROR`：内部错误
 
