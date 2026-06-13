@@ -1,0 +1,5 @@
+g = Graph(plugin="amazon_db")
+products = g.keyword_search(keyword="halloween", limit=100)
+scoring = g.product_scoring(products=products, top_n=5)
+g.output(scoring)
+result = g.execute()

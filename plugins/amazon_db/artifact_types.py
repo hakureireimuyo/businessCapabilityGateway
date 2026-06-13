@@ -31,20 +31,54 @@ class ReviewMetrics(ArtifactType):
     pass
 
 
-# ---- Analysis ----
+# ---- Analysis (aggregated, high-dimension semantics) ----
 
 class MarketAnalysis(ArtifactType):
     """Market analysis result (size, price, competition)."""
     pass
 
 
-class OpportunityList(ArtifactType):
-    """List of identified market opportunities."""
+class CompetitionAnalysis(ArtifactType):
+    """Competition landscape assessment."""
     pass
 
 
-class CompetitionAnalysis(ArtifactType):
-    """Competition landscape assessment."""
+# ---- Aggregated Summaries ----
+# These types enforce the "high-dimension semantics" boundary principle:
+# output must be Agent-reasoning-ready aggregates, never raw per-item lists.
+
+class OpportunitySummary(ArtifactType):
+    """Aggregated opportunity analysis: summary stats + top N opportunities."""
+    pass
+
+
+class ScoringSummary(ArtifactType):
+    """Aggregated product scoring: score distribution + top N products."""
+    pass
+
+
+class DiagnosisSummary(ArtifactType):
+    """Aggregated product diagnosis: category counts + top N per category."""
+    pass
+
+
+class KeywordMarketSummary(ArtifactType):
+    """Aggregated keyword market analysis: size distribution + top N keywords."""
+    pass
+
+
+class KeywordCompetitionSummary(ArtifactType):
+    """Aggregated keyword competition analysis: level distribution + top N keywords."""
+    pass
+
+
+class KeywordMarginSummary(ArtifactType):
+    """Aggregated keyword margin analysis: high-margin count + top N keywords."""
+    pass
+
+
+class KeywordTrendSummary(ArtifactType):
+    """Aggregated keyword trend analysis: trend distribution + growing/declining keywords."""
     pass
 
 

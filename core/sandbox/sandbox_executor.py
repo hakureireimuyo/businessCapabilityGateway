@@ -7,8 +7,9 @@ Pipeline:
   4. Extract and return result from g.execute()
 
 The Agent's script is restricted: no imports, no file I/O, no dangerous
-builtins.  The SDK (Graph class) runs unrestricted — it has full access
-to NodeRegistry, GraphValidator, and GraphExecutor.
+builtins.  The SDK (Graph class) runs unrestricted — each node method
+call executes immediately, so no separate graph validation or scheduling
+phase is needed.
 """
 
 import sys

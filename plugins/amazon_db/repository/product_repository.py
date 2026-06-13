@@ -9,6 +9,7 @@ consumes ProductCollection.
 
 from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from .db import get_session
 from .models import Product as ProductOrm, ProductKeyword as ProductKeywordOrm
@@ -365,5 +366,263 @@ class ProductRepository:
                 .all()
             )
             return ProductCollection([Product.from_orm(r) for r in rows])
+        finally:
+            session.close()
+
+
+# ================================================================
+# KeywordRepository — Keyword-level SQL GROUP BY aggregation
+# ================================================================
+
+class KeywordRepository:
+    """SQL-backed keyword-level aggregation queries.
+
+    Each method performs JOIN + GROUP BY keyword and returns list[dict]
+    with both basic aggregates and raw value lists for Python-level
+    statistical computation (median, quartiles, Gini coefficient, etc.).
+
+    Each method opens a fresh session and closes it before returning.
+    """
+
+    # ------------------------------------------------------------------
+    # 1. Market size stats — GROUP BY keyword
+    # ------------------------------------------------------------------
+
+    def aggregate_market_stats(
+        self,
+        keyword_filter: str | None = None,
+    ) -> list[dict]:
+        """Per-keyword market size metrics: product count, total/avg reviews,
+        and raw review values for median / Top3 computation."""
+        session = get_session()
+        try:
+            # Build base subquery: keyword → asin + review_count
+            base_q = (
+                session.query(
+                    ProductKeywordOrm.keyword,
+                    ProductOrm.asin,
+                    ProductOrm.review_count,
+                )
+                .join(ProductOrm, ProductOrm.asin == ProductKeywordOrm.asin)
+                .filter(ProductOrm.is_deleted == False)  # noqa: E712
+            )
+            if keyword_filter:
+                base_q = base_q.filter(
+                    ProductKeywordOrm.keyword.ilike(f"%{keyword_filter}%")
+                )
+            base_q = base_q.distinct()
+            rows = base_q.all()
+
+            # Group by keyword in Python (small cardinality — 98 keywords)
+            from collections import defaultdict
+            kw_data: dict[str, dict] = defaultdict(
+                lambda: {"product_count": 0, "total_reviews": 0, "review_values": []}
+            )
+            seen: dict[str, set] = defaultdict(set)
+            for keyword, asin, review_count in rows:
+                if asin in seen[keyword]:
+                    continue
+                seen[keyword].add(asin)
+                rv = review_count or 0
+                kw_data[keyword]["product_count"] += 1
+                kw_data[keyword]["total_reviews"] += rv
+                kw_data[keyword]["review_values"].append(rv)
+
+            result = []
+            for kw, data in kw_data.items():
+                result.append({
+                    "keyword": kw,
+                    "product_count": data["product_count"],
+                    "total_reviews": data["total_reviews"],
+                    "avg_reviews": (
+                        round(data["total_reviews"] / data["product_count"], 2)
+                        if data["product_count"] > 0 else 0.0
+                    ),
+                    "review_values": sorted(data["review_values"]),
+                })
+            return result
+        finally:
+            session.close()
+
+    # ------------------------------------------------------------------
+    # 2. Competition stats — GROUP BY keyword
+    # ------------------------------------------------------------------
+
+    def aggregate_competition_stats(
+        self,
+        keyword_filter: str | None = None,
+    ) -> list[dict]:
+        """Per-keyword competition metrics: product count, review values,
+        launch_date values for computing Gini, CV, and new-product ratio."""
+        session = get_session()
+        try:
+            base_q = (
+                session.query(
+                    ProductKeywordOrm.keyword,
+                    ProductOrm.asin,
+                    ProductOrm.review_count,
+                    ProductOrm.launch_date,
+                )
+                .join(ProductOrm, ProductOrm.asin == ProductKeywordOrm.asin)
+                .filter(ProductOrm.is_deleted == False)  # noqa: E712
+            )
+            if keyword_filter:
+                base_q = base_q.filter(
+                    ProductKeywordOrm.keyword.ilike(f"%{keyword_filter}%")
+                )
+            base_q = base_q.distinct()
+            rows = base_q.all()
+
+            from collections import defaultdict
+            kw_data: dict[str, dict] = defaultdict(
+                lambda: {
+                    "product_count": 0,
+                    "total_reviews": 0,
+                    "review_values": [],
+                    "launch_dates": [],
+                }
+            )
+            seen: dict[str, set] = defaultdict(set)
+            for keyword, asin, review_count, launch_date in rows:
+                if asin in seen[keyword]:
+                    continue
+                seen[keyword].add(asin)
+                rv = review_count or 0
+                kw_data[keyword]["product_count"] += 1
+                kw_data[keyword]["total_reviews"] += rv
+                kw_data[keyword]["review_values"].append(rv)
+                if launch_date is not None:
+                    kw_data[keyword]["launch_dates"].append(launch_date)
+
+            result = []
+            for kw, data in kw_data.items():
+                result.append({
+                    "keyword": kw,
+                    "product_count": data["product_count"],
+                    "avg_reviews": (
+                        round(data["total_reviews"] / data["product_count"], 2)
+                        if data["product_count"] > 0 else 0.0
+                    ),
+                    "review_values": sorted(data["review_values"]),
+                    "launch_dates": data["launch_dates"],
+                })
+            return result
+        finally:
+            session.close()
+
+    # ------------------------------------------------------------------
+    # 3. Margin stats — GROUP BY keyword
+    # ------------------------------------------------------------------
+
+    def aggregate_margin_stats(
+        self,
+        keyword_filter: str | None = None,
+    ) -> list[dict]:
+        """Per-keyword margin statistics: count, avg, min, max, and raw
+        margin values for median / quartile computation."""
+        session = get_session()
+        try:
+            base_q = (
+                session.query(
+                    ProductKeywordOrm.keyword,
+                    ProductOrm.asin,
+                    ProductOrm.gross_margin,
+                )
+                .join(ProductOrm, ProductOrm.asin == ProductKeywordOrm.asin)
+                .filter(ProductOrm.is_deleted == False)  # noqa: E712
+                .filter(ProductOrm.gross_margin.isnot(None))
+            )
+            if keyword_filter:
+                base_q = base_q.filter(
+                    ProductKeywordOrm.keyword.ilike(f"%{keyword_filter}%")
+                )
+            base_q = base_q.distinct()
+            rows = base_q.all()
+
+            from collections import defaultdict
+            kw_data: dict[str, dict] = defaultdict(
+                lambda: {"product_count": 0, "margin_values": []}
+            )
+            seen: dict[str, set] = defaultdict(set)
+            for keyword, asin, margin in rows:
+                if asin in seen[keyword]:
+                    continue
+                seen[keyword].add(asin)
+                kw_data[keyword]["product_count"] += 1
+                kw_data[keyword]["margin_values"].append(float(margin) if margin else 0.0)
+
+            result = []
+            for kw, data in kw_data.items():
+                margins = data["margin_values"]
+                result.append({
+                    "keyword": kw,
+                    "product_count": data["product_count"],
+                    "avg_margin": round(sum(margins) / len(margins), 4) if margins else 0.0,
+                    "min_margin": round(min(margins), 4) if margins else 0.0,
+                    "max_margin": round(max(margins), 4) if margins else 0.0,
+                    "margin_values": sorted(margins),
+                })
+            return result
+        finally:
+            session.close()
+
+    # ------------------------------------------------------------------
+    # 4. Launch trend — GROUP BY keyword + launch year
+    # ------------------------------------------------------------------
+
+    def aggregate_launch_trend(
+        self,
+        keyword_filter: str | None = None,
+    ) -> list[dict]:
+        """Per-keyword + per-year launch statistics: product count,
+        avg reviews by launch year."""
+        session = get_session()
+        try:
+            base_q = (
+                session.query(
+                    ProductKeywordOrm.keyword,
+                    ProductOrm.asin,
+                    ProductOrm.launch_date,
+                    ProductOrm.review_count,
+                )
+                .join(ProductOrm, ProductOrm.asin == ProductKeywordOrm.asin)
+                .filter(ProductOrm.is_deleted == False)  # noqa: E712
+                .filter(ProductOrm.launch_date.isnot(None))
+            )
+            if keyword_filter:
+                base_q = base_q.filter(
+                    ProductKeywordOrm.keyword.ilike(f"%{keyword_filter}%")
+                )
+            base_q = base_q.distinct()
+            rows = base_q.all()
+
+            from collections import defaultdict
+            kw_year: dict[str, dict[int, dict]] = defaultdict(
+                lambda: defaultdict(lambda: {"count": 0, "total_reviews": 0})
+            )
+            kw_total: dict[str, int] = defaultdict(int)
+            seen: dict[str, set] = defaultdict(set)
+
+            for keyword, asin, launch_date, review_count in rows:
+                if asin in seen[keyword]:
+                    continue
+                seen[keyword].add(asin)
+                year = launch_date.year
+                kw_year[keyword][year]["count"] += 1
+                kw_year[keyword][year]["total_reviews"] += review_count or 0
+                kw_total[keyword] += 1
+
+            result = []
+            for kw, year_data in kw_year.items():
+                entry: dict = {"keyword": kw, "total_products": kw_total[kw]}
+                for yr in range(2020, 2027):
+                    d = year_data.get(yr, {"count": 0, "total_reviews": 0})
+                    entry[f"products_{yr}"] = d["count"]
+                    entry[f"avg_reviews_{yr}"] = (
+                        round(d["total_reviews"] / d["count"], 1)
+                        if d["count"] > 0 else 0
+                    )
+                result.append(entry)
+            return result
         finally:
             session.close()

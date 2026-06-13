@@ -15,7 +15,6 @@ Usage:
 """
 
 from .graph import Graph
-from .placeholder import ArtifactPlaceholder
 from .exceptions import GraphError
 
-__all__ = ["Graph", "ArtifactPlaceholder", "GraphError"]
+__all__ = ["Graph", "GraphError"]

@@ -20,8 +20,8 @@
 - 插件自动发现与加载
 - 基于 Graph DAG 的能力组合
 - 节点注册与协议发现（输入/输出/参数类型约束）
-- 7 层图校验（节点存在性、参数有效性、输入完整性、类型兼容性、循环检测、输出有效性、业务规则）
-- 依赖驱动的图执行（拓扑排序 + 单线程顺序调度）
+- 即时校验（节点存在、参数合法、输入完备、类型兼容 — 调用即校验）
+- 即时执行（调用即执行，Python 自身执行顺序自然保证依赖 DAG）
 - Python 沙箱执行（AST 校验 + 受限 builtins + 超时控制）
 - 统一成功/失败响应格式
 
@@ -31,7 +31,6 @@
 businessCapabilityGateway/
 ├── api/                       # HTTP 接口层
 ├── core/                      # 网关核心模块
-│   ├── graph/                 # 图模型、校验器、执行器
 │   ├── plugin/                # 插件加载器
 │   ├── protocol/              # Node / Artifact 协议定义
 │   ├── registry/              # 节点注册中心
@@ -53,24 +52,17 @@ businessCapabilityGateway/
 ```
 Agent (Python SDK)
   │  g = Graph(plugin="amazon")
-  │  products = g.keyword_search(keyword="test")
-  │  analysis = g.market_analysis(products=products)
+  │  products = g.keyword_search(keyword="test")     ← 立即校验 + 执行
+  │  analysis = g.market_analysis(products=products) ← 立即校验 + 执行
   │  g.output(analysis)
-  │  result = g.execute()
+  │  result = g.execute()  ← 仅收集已标记的输出
   ▼
 POST /execute (text/plain)
   │
   ▼
 Sandbox (AST 校验 → restricted __builtins__ → exec → extract result)
-  │
-  ▼
-GraphValidator (7 层校验)
-  │
-  ▼
-GraphExecutor (拓扑排序 → 依赖驱动的顺序调度)
-  │
-  ▼
-Node.execute() → Artifact → downstream Node ... → final output
+  │  │
+  │  └─ exec 过程中：每个 g.xxx() 调用即时校验参数/输入/类型，立即执行 Node
   │
   ▼
 JSON Response {"success": true, "data": {...}}
@@ -181,14 +173,15 @@ g.output(js)
 result = g.execute()
 ```
 
-## 图执行规则
+## 执行规则
 
-Graph 是一个有向无环图（DAG），节点通过 Artifact 连接。执行器基于拓扑排序，按依赖关系顺序执行：
+Graph 是一个有向无环图（DAG），节点通过 Artifact 连接。SDK 采用**即时执行**模型：
 
-- 没有输入边的节点（Source）按名称排序依次启动
-- 每个节点执行完成后的输出（Artifact）传递给下游节点
-- 无依赖关系的节点按名称排序依次执行
-- 有循环依赖的图在验证阶段被拒绝
+- 调用 `g.xxx(...)` 时立即校验参数/输入/类型，校验通过后立即执行 Node
+- 每次调用返回的 `Artifact` 可直接传给下游节点
+- Python 自身的执行顺序自然保证依赖 DAG（下游节点必须先拿到上游的 Artifact 才能调用）
+- 循环依赖在 SDK 层自然无法表达（无法在拿到下游结果前传给上游）
+- `g.output()` 标记最终产出，`g.execute()` 收集已标记的结果
 - 每个节点只能在同一插件范围内
 
 ## 常见错误码

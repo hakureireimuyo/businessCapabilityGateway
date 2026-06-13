@@ -1,0 +1,8 @@
+g = Graph(plugin="amazon_db")
+products = g.keyword_search(keyword="halloween", limit=10000)
+filtered = g.filter(products=products, price_gte=20.0, price_lte=30.0, margin_gte=0.4)
+analysis = g.market_analysis(products=filtered)
+scoring = g.product_scoring(products=filtered, top_n=20)
+g.output(analysis)
+g.output(scoring)
+result = g.execute()

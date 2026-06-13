@@ -1,6 +1,7 @@
 """Plugin: loader — auto-discover and load plugins"""
 
 import importlib
+import importlib.util
 import os
 from pathlib import Path
 

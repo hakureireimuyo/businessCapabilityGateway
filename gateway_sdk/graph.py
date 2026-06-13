@@ -1,24 +1,20 @@
 """SDK: Graph — fluent API for building and executing node graphs
 
-This is the primary interface for Agents.  Each registered Node becomes
-a method on the Graph object.  Calling it returns an ArtifactPlaceholder.
-Passing a placeholder to another node call automatically creates an edge.
+Each registered Node becomes a method on the Graph object.
+Calling a node method immediately executes the node — there is no
+intermediate Graph representation, no deferred validation pass,
+and no separate scheduling phase.  Python's own execution order
+naturally enforces the dependency DAG.
 """
 
 from __future__ import annotations
 from typing import Any
 
-from core.graph.model import Graph as InternalGraph, GraphNode, GraphEdge
-from core.graph.validator import GraphValidator
-from core.graph.executor import GraphExecutor
+from core.protocol.artifact import Artifact
 from core.registry.node_registry import get_registry, NodeRegistry
-from core.exceptions import (
-    GatewayException,
-    NodeNotFoundException,
-    PluginNotFoundException,
-)
+from core.runtime.context import ExecutionContext
+from core.exceptions import NodeNotFoundException, PluginNotFoundException
 
-from .placeholder import ArtifactPlaceholder
 from .exceptions import GraphError
 
 
@@ -31,9 +27,9 @@ class _NodeCall:
     """Callable proxy for a registered Node name on a Graph.
 
     Returned by Graph.__getattr__("node_name").  When called with keyword
-    arguments, separates ArtifactPlaceholder references from literal
-    parameters, validates them against the Node spec, creates a GraphNode
-    and GraphEdges, and returns an ArtifactPlaceholder.
+    arguments, separates Artifact references from literal parameters,
+    validates them against the Node spec, executes the node immediately,
+    and returns the resulting Artifact.
     """
 
     __slots__ = ("_graph", "_node_name", "_spec")
@@ -43,23 +39,31 @@ class _NodeCall:
         self._node_name = node_name
         self._spec = graph._registry.get_node(graph._plugin, node_name)
 
-    def __call__(self, **kwargs: Any) -> ArtifactPlaceholder:
+    def __call__(self, **kwargs: Any) -> Artifact:
         graph = self._graph
         spec = self._spec
 
-        # 1. Separate kwargs into params and artifact references
+        # 1. Separate kwargs into params (literal) and inputs (Artifact)
         params: dict[str, Any] = {}
-        edges: list[tuple[str, str, str]] = []  # (from_node, from_output, to_input)
+        inputs: dict[str, Artifact] = {}
 
         for key, value in kwargs.items():
-            if isinstance(value, ArtifactPlaceholder):
-                # Artifact reference → will create edge
+            if isinstance(value, Artifact):
+                # Artifact reference — validate input name and type compatibility
                 if key not in spec.input_specs:
                     raise GraphError(
                         f"Node '{self._node_name}' has no input named '{key}'. "
                         f"Available inputs: {list(spec.input_specs.keys())}"
                     )
-                edges.append((value._node_id, value._output_key, key))
+                expected_type = spec.input_specs[key].artifact_type
+                actual_type = value.type
+                if not issubclass(actual_type, expected_type):
+                    raise GraphError(
+                        f"Type mismatch: {actual_type.__name__} cannot feed into "
+                        f"{expected_type.__name__} "
+                        f"(input '{key}' of node '{self._node_name}')"
+                    )
+                inputs[key] = value
             else:
                 params[key] = value
 
@@ -83,38 +87,25 @@ class _NodeCall:
                     f"expected {_type_name(expected_type)}, got {_type_name(type(pvalue))}"
                 )
 
-        # 3. Generate unique node_id
-        graph._counter[self._node_name] = graph._counter.get(self._node_name, 0) + 1
-        node_id = f"{self._node_name}_{graph._counter[self._node_name]}"
+        # 3. Validate required inputs are satisfied
+        for iname, ispec in spec.input_specs.items():
+            if ispec.required and iname not in inputs:
+                raise GraphError(
+                    f"Node '{self._node_name}' requires input '{iname}' "
+                    f"({ispec.artifact_type.__name__})"
+                )
 
-        # 4. Create GraphNode
-        gn = GraphNode(node_id=node_id, node_name=self._node_name, params=params)
-        graph._nodes[node_id] = gn
+        # 4. Execute immediately
+        artifact = spec.execute(inputs, params, graph._context)
 
-        # 5. Create GraphEdges for artifact references
-        for from_node, from_output, to_input in edges:
-            edge = GraphEdge(
-                from_node=from_node,
-                from_output=from_output,
-                to_node=node_id,
-                to_input=to_input,
-            )
-            graph._edges.append(edge)
+        # 5. Track artifact in context (for debugging / introspection)
+        graph._context.artifacts[artifact.key] = artifact
 
-        # 6. Return ArtifactPlaceholder
-        output_key = spec.output_spec.key if spec.output_spec else node_id
-        artifact_type = spec.output_spec.artifact_type if spec.output_spec else type(
-            "Unknown", (), {}
-        )
-        return ArtifactPlaceholder(
-            _node_id=node_id,
-            _output_key=output_key,
-            _artifact_type=artifact_type,
-        )
+        return artifact
 
 
 class Graph:
-    """Fluent API for building and executing node graphs.
+    """Fluent API for immediate node execution.
 
     Usage:
         g = Graph(plugin="amazon")
@@ -124,16 +115,7 @@ class Graph:
         result = g.execute()
     """
 
-    __slots__ = (
-        "_plugin",
-        "_registry",
-        "_nodes",
-        "_edges",
-        "_output_ids",
-        "_counter",
-        "_validator",
-        "_executor",
-    )
+    __slots__ = ("_plugin", "_registry", "_outputs", "_context")
 
     def __init__(self, plugin: str):
         """Create a new Graph for a specific plugin."""
@@ -147,15 +129,8 @@ class Graph:
                 f"Plugin '{plugin}' not found. Available: {available or '(none)'}"
             )
 
-        # Internal state accumulated during method calls
-        self._nodes: dict[str, GraphNode] = {}
-        self._edges: list[GraphEdge] = []
-        self._output_ids: set[str] = set()
-        self._counter: dict[str, int] = {}
-
-        # Execution components (lazy)
-        self._validator = GraphValidator()
-        self._executor = GraphExecutor()
+        self._outputs: list[Artifact] = []
+        self._context = ExecutionContext(plugin_name=plugin)
 
     @property
     def plugin(self) -> str:
@@ -179,42 +154,17 @@ class Graph:
 
         return _NodeCall(self, name)
 
-    def output(self, placeholder: ArtifactPlaceholder) -> None:
-        """Mark a node's output as a final result.
+    def output(self, artifact: Artifact) -> None:
+        """Mark a node's output Artifact as a final result.
 
-        Multiple nodes can be marked as outputs; all of their data
-        will be included in the execute() result.
+        Multiple artifacts can be marked; all will be included in execute().
         """
-        if placeholder._node_id not in self._nodes:
-            raise GraphError(
-                f"ArtifactPlaceholder references unknown node '{placeholder._node_id}'"
-            )
-        self._output_ids.add(placeholder._node_id)
+        self._outputs.append(artifact)
 
     def execute(self) -> dict[str, Any]:
-        """Build the internal Graph, validate, execute, and return results.
+        """Return collected outputs as {output_key: raw_data}.
 
-        This is called at the end of an Agent's script. It:
-          1. Builds the core.graph.model.Graph from accumulated state
-          2. Validates via GraphValidator (7 layers)
-          3. Executes via GraphExecutor (dependency-driven sequential)
-          4. Returns a dict of {output_key: raw_data}
+        Since nodes execute immediately when called, this method simply
+        formats the artifacts marked via output() into the result dict.
         """
-        if not self._nodes:
-            return {}
-
-        # Build internal graph
-        graph = InternalGraph(
-            plugin=self._plugin,
-            nodes=self._nodes,
-            edges=list(self._edges),
-            outputs=sorted(self._output_ids),
-        )
-
-        # Validate (raises InvalidGraphError on failure)
-        self._validator.validate_or_raise(graph)
-
-        # Execute
-        result = self._executor.execute(graph)
-
-        return result
+        return {a.key: a.data for a in self._outputs}
