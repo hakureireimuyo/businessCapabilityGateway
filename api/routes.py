@@ -1,12 +1,7 @@
 """API routes — HTTP interface for Agent interaction"""
 
-import json
-import time
 from flask import Blueprint, request, jsonify
 
-from core.graph.model import Graph
-from core.graph.validator import GraphValidator
-from core.graph.executor import GraphExecutor
 from core.registry.node_registry import get_registry
 from core.exceptions import GatewayException
 from core.logger import get_logger
@@ -66,24 +61,23 @@ def all_capabilities():
 
 @api_bp.route("/execute", methods=["POST"])
 def execute_graph():
-    """POST /execute — execute a graph.
+    """POST /execute — execute a Python script that builds and runs a Graph.
 
-    Content-Type: application/json
-    Body: JSON Graph description
+    Content-Type: text/plain
+    Body: Python script using the Gateway SDK
 
     Example:
-    {
-      "plugin": "amazon",
-      "nodes": {
-        "s1": {"node_name": "keyword_search", "params": {"keyword": "halloween"}},
-        "a1": {"node_name": "market_analysis", "params": {}}
-      },
-      "edges": [
-        {"from": "s1", "from_output": "products", "to": "a1", "to_input": "products"}
-      ],
-      "outputs": ["a1"]
-    }
+        g = Graph(plugin="amazon")
+        products = g.keyword_search(keyword="halloween garland")
+        analysis = g.market_analysis(products=products)
+        g.output(analysis)
+        result = g.execute()
     """
+    from core.sandbox.sandbox_executor import execute_script, SandboxTimeoutError
+    from core.sandbox.ast_validator import ASTValidationError
+    from gateway_sdk.exceptions import GraphError
+    from core.exceptions import GatewayException, InvalidGraphError
+
     raw_body = request.get_data(as_text=True)
 
     if not raw_body or not raw_body.strip():
@@ -95,46 +89,48 @@ def execute_graph():
             }
         }), 400
 
-    logger.info("Execute request: %s", raw_body[:200])
+    logger.info("Execute request (%d chars)", len(raw_body))
 
     try:
-        # Parse JSON body
-        try:
-            body = json.loads(raw_body)
-        except json.JSONDecodeError as e:
-            return jsonify({
-                "success": False,
-                "error": {
-                    "code": "INVALID_JSON",
-                    "message": f"Invalid JSON: {e}",
-                }
-            }), 400
-
-        # Build graph from JSON
-        graph = Graph.from_dict(body)
-
-        # Validate
-        validator = GraphValidator()
-        errors = validator.validate(graph)
-        if errors:
-            return jsonify({
-                "success": False,
-                "error": {
-                    "code": "INVALID_GRAPH",
-                    "message": f"Graph validation failed: {len(errors)} error(s)",
-                    "errors": errors,
-                }
-            }), 400
-
-        # Execute
-        executor = GraphExecutor()
-        result_data = executor.execute(graph)
+        result_data = execute_script(raw_body)
 
         return jsonify({
             "success": True,
             "data": result_data,
-            "message": f"Graph executed ({graph.node_count()} nodes)",
+            "message": "Graph executed",
         }), 200
+
+    except ASTValidationError as e:
+        logger.warning("AST validation error: %s", e)
+        return jsonify({
+            "success": False,
+            "error": {"code": "INVALID_SCRIPT", "message": str(e)},
+        }), 400
+
+    except SandboxTimeoutError as e:
+        logger.warning("Script timeout: %s", e)
+        return jsonify({
+            "success": False,
+            "error": {"code": "EXECUTION_TIMEOUT", "message": str(e)},
+        }), 400
+
+    except InvalidGraphError as e:
+        logger.warning("Graph validation error: %s", e)
+        return jsonify({
+            "success": False,
+            "error": {
+                "code": "INVALID_GRAPH",
+                "message": str(e),
+                "errors": e.errors,
+            }
+        }), 400
+
+    except GraphError as e:
+        logger.warning("SDK error: %s", e)
+        return jsonify({
+            "success": False,
+            "error": {"code": "INVALID_SCRIPT", "message": str(e)},
+        }), 400
 
     except GatewayException as e:
         logger.error("Gateway error: [%s] %s", e.code, e.message)
@@ -142,6 +138,7 @@ def execute_graph():
             "success": False,
             "error": {"code": e.code, "message": e.message},
         }), 400
+
     except Exception as e:
         logger.exception("Unexpected error")
         return jsonify({

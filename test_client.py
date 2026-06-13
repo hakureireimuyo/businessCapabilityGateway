@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 """Gateway Test Client v2.0
 
-Validates all gateway API endpoints with the new Graph protocol.
+Validates all gateway API endpoints using the Python SDK (script) interface.
 Usage: python test_client.py
 """
 
 import json
 import sys
 import urllib.request
+import urllib.error
 
 BASE_URL = "http://localhost:8765"
 PASS = "[PASS]"
 FAIL = "[FAIL]"
 
 
-def request(method: str, path: str, body: str | None = None) -> dict:
+def request(method: str, path: str, body: str | None = None,
+            content_type: str = "application/json") -> dict:
     """Send HTTP request to gateway."""
     url = f"{BASE_URL}{path}"
     data = body.encode("utf-8") if body else None
     req = urllib.request.Request(url, data=data, method=method)
     if data:
-        req.add_header("Content-Type", "application/json")
+        req.add_header("Content-Type", content_type)
 
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return json.loads(e.read())
@@ -63,7 +65,7 @@ def test_list_plugins():
 
 
 def test_list_nodes():
-    """List Amazon plugin node specs (new protocol)"""
+    """List Amazon plugin node specs"""
     result = request("GET", "/plugins/amazon/nodes")
     assert isinstance(result, list)
     print(f"  Amazon has {len(result)} node specs:")
@@ -76,42 +78,34 @@ def test_list_nodes():
 
 
 def test_simple_graph():
-    """Simple 2-node graph: keyword_search → market_analysis"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {
-            "s1": {"node_name": "keyword_search", "params": {"keyword": "halloween garland"}},
-            "a1": {"node_name": "market_analysis", "params": {}},
-        },
-        "edges": [
-            {"from": "s1", "from_output": "products", "to": "a1", "to_input": "products"},
-        ],
-        "outputs": ["a1"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+    """Simple 2-node graph: keyword_search -> market_analysis"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.keyword_search(keyword="halloween garland")
+analysis = g.market_analysis(products=products)
+g.output(analysis)
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success"), f"Failed: {result}"
     data = result["data"]
-    print(f"  Market size: {data['market_analysis']['market_size']}")
-    print(f"  Avg price: ${data['market_analysis']['avg_price']}")
-    print(f"  Competition score: {data['market_analysis']['competition_score']}/100")
+    ma = data["market_analysis"]
+    print(f"  Market size: {ma['market_size']}")
+    print(f"  Avg price: ${ma['avg_price']}")
+    print(f"  Competition score: {ma['competition_score']}/100")
 
 
 def test_filtered_graph():
-    """Graph with filter: search → filter → market_analysis"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {
-            "s1": {"node_name": "keyword_search", "params": {"keyword": "halloween garland", "limit": 50}},
-            "f1": {"node_name": "filter", "params": {"price_gte": 10.0, "price_lte": 50.0}},
-            "a1": {"node_name": "market_analysis", "params": {}},
-        },
-        "edges": [
-            {"from": "s1", "from_output": "products", "to": "f1", "to_input": "products"},
-            {"from": "f1", "from_output": "filtered_products", "to": "a1", "to_input": "products"},
-        ],
-        "outputs": ["a1"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+    """Graph with filter: search -> filter -> market_analysis"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.keyword_search(keyword="halloween garland", limit=50)
+filtered = g.filter(products=products, price_gte=10.0, price_lte=50.0)
+analysis = g.market_analysis(products=filtered)
+g.output(analysis)
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success"), f"Failed: {result}"
     data = result["data"]
     ma = data["market_analysis"]
@@ -121,24 +115,17 @@ def test_filtered_graph():
 
 
 def test_parallel_analysis_graph():
-    """Graph with parallel branches: search → sales_analysis + review_analysis → market_score"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {
-            "s1": {"node_name": "keyword_search", "params": {"keyword": "halloween garland"}},
-            "sales": {"node_name": "sales_analysis", "params": {}},
-            "reviews": {"node_name": "review_analysis", "params": {}},
-            "score": {"node_name": "market_score", "params": {"method": "weighted"}},
-        },
-        "edges": [
-            {"from": "s1", "from_output": "products", "to": "sales", "to_input": "products"},
-            {"from": "s1", "from_output": "products", "to": "reviews", "to_input": "products"},
-            {"from": "sales", "from_output": "sales_metrics", "to": "score", "to_input": "sales"},
-            {"from": "reviews", "from_output": "review_metrics", "to": "score", "to_input": "reviews"},
-        ],
-        "outputs": ["score"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+    """Graph with parallel branches: search -> sales_analysis + review_analysis -> market_score"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.keyword_search(keyword="halloween garland")
+sales = g.sales_analysis(products=products)
+reviews = g.review_analysis(products=products)
+score = g.market_score(sales=sales, reviews=reviews, method="weighted")
+g.output(score)
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success"), f"Failed: {result}"
     data = result["data"]
     signal = data["market_signal"]
@@ -149,23 +136,18 @@ def test_parallel_analysis_graph():
 
 
 def test_multi_output_graph():
-    """Graph with multiple outputs: search → analysis → chart + report"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {
-            "s1": {"node_name": "keyword_search", "params": {"keyword": "bluetooth headphone"}},
-            "a1": {"node_name": "competition_analysis", "params": {}},
-            "o1": {"node_name": "chart_output", "params": {}},
-            "o2": {"node_name": "json_output", "params": {}},
-        },
-        "edges": [
-            {"from": "s1", "from_output": "products", "to": "a1", "to_input": "products"},
-            {"from": "a1", "from_output": "competition_analysis", "to": "o1", "to_input": "data"},
-            {"from": "a1", "from_output": "competition_analysis", "to": "o2", "to_input": "data"},
-        ],
-        "outputs": ["o1", "o2"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+    """Graph with multiple outputs: search -> competition_analysis -> chart + json"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.keyword_search(keyword="bluetooth headphone")
+analysis = g.competition_analysis(products=products)
+chart = g.chart_output(data=analysis)
+js = g.json_output(data=analysis)
+g.output(chart)
+g.output(js)
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success"), f"Failed: {result}"
     data = result["data"]
     assert "chart" in data, f"Expected 'chart' in outputs, got {list(data.keys())}"
@@ -176,46 +158,18 @@ def test_multi_output_graph():
     print(f"  Competition: {comp.get('total_competitors', '?')} competitors, barrier={comp.get('entry_barrier_score', '?')}/100")
 
 
-def test_invalid_graph_cycle():
-    """Invalid graph: cyclic dependency (should fail validation)"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {
-            "a": {"node_name": "keyword_search", "params": {"keyword": "test"}},
-            "b": {"node_name": "filter", "params": {}},
-            "c": {"node_name": "sort", "params": {"by": "price"}},
-        },
-        "edges": [
-            {"from": "a", "from_output": "products", "to": "b", "to_input": "products"},
-            {"from": "b", "from_output": "filtered_products", "to": "c", "to_input": "products"},
-            {"from": "c", "from_output": "sorted_products", "to": "b", "to_input": "products"},  # cycle!
-        ],
-        "outputs": ["c"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
-    assert result.get("success") is False, "Expected validation failure for cycle"
-    assert result["error"]["code"] == "INVALID_GRAPH"
-    print(f"  Correctly rejected: {result['error']['message']}")
-
-
-def test_invalid_type_mismatch():
-    """Invalid graph: type mismatch (should fail validation)"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {
-            "s1": {"node_name": "keyword_search", "params": {"keyword": "test"}},
-            "a1": {"node_name": "market_analysis", "params": {}},
-            "a2": {"node_name": "market_score", "params": {}},
-        },
-        "edges": [
-            {"from": "s1", "from_output": "products", "to": "a1", "to_input": "products"},
-            # ERROR: market_analysis produces MarketAnalysis, but market_score.sales expects SalesMetrics
-            {"from": "a1", "from_output": "market_analysis", "to": "a2", "to_input": "sales"},
-            {"from": "a1", "from_output": "market_analysis", "to": "a2", "to_input": "reviews"},
-        ],
-        "outputs": ["a2"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+def test_type_mismatch():
+    """Invalid graph: type mismatch (MarketAnalysis fed into SalesMetrics input)"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.keyword_search(keyword="test")
+analysis = g.market_analysis(products=products)
+# BUG: market_score expects sales=SalesMetrics but we pass MarketAnalysis
+score = g.market_score(sales=analysis, reviews=analysis)
+g.output(score)
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success") is False, "Expected validation failure for type mismatch"
     assert result["error"]["code"] == "INVALID_GRAPH"
     print(f"  Correctly rejected: {result['error']['message']}")
@@ -223,28 +177,54 @@ def test_invalid_type_mismatch():
 
 def test_plugin_not_found():
     """Non-existent plugin"""
-    graph = {
-        "plugin": "nonexistent",
-        "nodes": {"n1": {"node_name": "some_node", "params": {}}},
-        "edges": [],
-        "outputs": ["n1"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+    script = """
+g = Graph(plugin="nonexistent")
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success") is False
-    print(f"  Correct error: {result.get('error', {}).get('code', '?')}")
+    print(f"  Correct error code: {result.get('error', {}).get('code', '?')}")
+    print(f"  Message: {result.get('error', {}).get('message', '?')}")
 
 
 def test_node_not_found():
-    """Non-existent node"""
-    graph = {
-        "plugin": "amazon",
-        "nodes": {"n1": {"node_name": "ghost_node", "params": {}}},
-        "edges": [],
-        "outputs": ["n1"],
-    }
-    result = request("POST", "/execute", json.dumps(graph))
+    """Non-existent node method on Graph"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.ghost_node(keyword="test")
+g.output(products)
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
     assert result.get("success") is False
-    print(f"  Correct error: {result.get('error', {}).get('code', '?')}")
+    print(f"  Correct error code: {result.get('error', {}).get('code', '?')}")
+    print(f"  Message: {result.get('error', {}).get('message', '?')}")
+
+
+def test_missing_result():
+    """Script without result = g.execute()"""
+    script = """
+g = Graph(plugin="amazon")
+products = g.keyword_search(keyword="test")
+g.output(products)
+x = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
+    assert result.get("success") is False
+    assert result["error"]["code"] == "INVALID_SCRIPT"
+    print(f"  Correctly rejected: {result['error']['message']}")
+
+
+def test_import_blocked():
+    """Script attempting to import a module (AST validation rejects)"""
+    script = """
+import os
+g = Graph(plugin="amazon")
+result = g.execute()
+"""
+    result = request("POST", "/execute", script, content_type="text/plain")
+    assert result.get("success") is False
+    assert result["error"]["code"] == "INVALID_SCRIPT"
+    print(f"  Correctly blocked: {result['error']['message']}")
 
 
 # ========== Main ==========
@@ -253,7 +233,7 @@ def main():
     print("=" * 60)
     print("  Business Capability Gateway v2.0 — Integration Test")
     print(f"  Server: {BASE_URL}")
-    print("  Protocol: Node + Graph (DAG)")
+    print("  Protocol: Python SDK (text/plain)")
     print("=" * 60)
 
     # Check service is running
@@ -266,15 +246,16 @@ def main():
 
     run_test("1. Health Check", test_health)
     run_test("2. List Plugins", test_list_plugins)
-    run_test("3. List Node Specs (new protocol)", test_list_nodes)
-    run_test("4. Simple Graph: search → market_analysis", test_simple_graph)
-    run_test("5. Filtered Graph: search → filter → analysis", test_filtered_graph)
-    run_test("6. Parallel Graph: sales + reviews → market_score", test_parallel_analysis_graph)
-    run_test("7. Multi-output Graph: analysis → chart + json", test_multi_output_graph)
-    run_test("8. Invalid: Cyclic Dependency", test_invalid_graph_cycle)
-    run_test("9. Invalid: Type Mismatch", test_invalid_type_mismatch)
-    run_test("10. Plugin Not Found", test_plugin_not_found)
-    run_test("11. Node Not Found", test_node_not_found)
+    run_test("3. List Node Specs", test_list_nodes)
+    run_test("4. Simple Graph: search -> market_analysis", test_simple_graph)
+    run_test("5. Filtered Graph: search -> filter -> analysis", test_filtered_graph)
+    run_test("6. Parallel Graph: sales + reviews -> market_score", test_parallel_analysis_graph)
+    run_test("7. Multi-output Graph: analysis -> chart + json", test_multi_output_graph)
+    run_test("8. Invalid: Type Mismatch", test_type_mismatch)
+    run_test("9. Plugin Not Found", test_plugin_not_found)
+    run_test("10. Node Not Found", test_node_not_found)
+    run_test("11. Missing result = g.execute()", test_missing_result)
+    run_test("12. AST Blocked: import statement", test_import_blocked)
 
     print(f"\n{'='*60}")
     print("  All tests completed!")
