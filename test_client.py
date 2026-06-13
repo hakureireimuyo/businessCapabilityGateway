@@ -65,16 +65,28 @@ def test_list_plugins():
 
 
 def test_list_nodes():
-    """List Amazon plugin node specs"""
+    """List Amazon plugin node summaries"""
     result = request("GET", "/plugins/amazon/nodes")
     assert isinstance(result, list)
-    print(f"  Amazon has {len(result)} node specs:")
-    for spec in result:
-        name = spec["name"]
-        inputs = list(spec.get("input_specs", {}).keys())
-        output = spec.get("output_spec", {}).get("key", "?") if spec.get("output_spec") else "?"
-        params = list(spec.get("parameter_specs", {}).keys())
-        print(f"    [{name}]  inputs={inputs}  output={output}  params={params}")
+    print(f"  Amazon has {len(result)} node summaries:")
+    for s in result:
+        entry = "ENTRY" if s.get("is_entry") else "LINK"
+        print(f"    [{s['name']}]  {entry}  output={s.get('output_key')}({s.get('output_type')})  "
+              f"inputs={s.get('input_count')}")
+
+
+def test_get_node_spec():
+    """Get full spec for a single node"""
+    result = request("GET", "/plugins/amazon/nodes/keyword_search")
+    assert isinstance(result, dict)
+    assert result["name"] == "keyword_search"
+    assert "input_specs" in result
+    assert "output_spec" in result
+    assert "parameter_specs" in result
+    print(f"  keyword_search full spec:")
+    print(f"    inputs:  {list(result['input_specs'].keys())}")
+    print(f"    output:  {result['output_spec']['key']} ({result['output_spec']['artifact_type']})")
+    print(f"    params:  {list(result['parameter_specs'].keys())}")
 
 
 def test_simple_graph():
@@ -246,16 +258,17 @@ def main():
 
     run_test("1. Health Check", test_health)
     run_test("2. List Plugins", test_list_plugins)
-    run_test("3. List Node Specs", test_list_nodes)
-    run_test("4. Simple Graph: search -> market_analysis", test_simple_graph)
-    run_test("5. Filtered Graph: search -> filter -> analysis", test_filtered_graph)
-    run_test("6. Parallel Graph: sales + reviews -> market_score", test_parallel_analysis_graph)
-    run_test("7. Multi-output Graph: analysis -> chart + json", test_multi_output_graph)
-    run_test("8. Invalid: Type Mismatch", test_type_mismatch)
-    run_test("9. Plugin Not Found", test_plugin_not_found)
-    run_test("10. Node Not Found", test_node_not_found)
-    run_test("11. Missing result = g.execute()", test_missing_result)
-    run_test("12. AST Blocked: import statement", test_import_blocked)
+    run_test("3. List Node Summaries", test_list_nodes)
+    run_test("4. Single Node Spec: keyword_search", test_get_node_spec)
+    run_test("5. Simple Graph: search -> market_analysis", test_simple_graph)
+    run_test("6. Filtered Graph: search -> filter -> analysis", test_filtered_graph)
+    run_test("7. Parallel Graph: sales + reviews -> market_score", test_parallel_analysis_graph)
+    run_test("8. Multi-output Graph: analysis -> chart + json", test_multi_output_graph)
+    run_test("9. Invalid: Type Mismatch", test_type_mismatch)
+    run_test("10. Plugin Not Found", test_plugin_not_found)
+    run_test("11. Node Not Found", test_node_not_found)
+    run_test("12. Missing result = g.execute()", test_missing_result)
+    run_test("13. AST Blocked: import statement", test_import_blocked)
 
     print(f"\n{'='*60}")
     print("  All tests completed!")

@@ -26,26 +26,48 @@ def list_plugins():
 
 @api_bp.route("/plugins/<plugin_name>/nodes", methods=["GET"])
 def list_plugin_nodes(plugin_name: str):
-    """GET /plugins/<plugin>/nodes — list node specs for a plugin.
+    """GET /plugins/<plugin>/nodes — lightweight summary list of all nodes.
 
-    Returns the protocol specification for each registered node:
-      - name, description
-      - input_specs (what Artifacts it consumes)
-      - output_spec (what Artifact it produces)
-      - parameter_specs (what literal parameters it accepts)
+    Returns just enough for the Agent to scan what's available:
+      name, description, is_entry, input_count, output_key, output_type.
+
+    For the full protocol spec of a specific node, request:
+      GET /plugins/<plugin>/nodes/<node_name>
     """
     registry = get_registry()
     try:
-        specs = registry.list_specs(plugin_name)
-        return jsonify(specs)
+        summaries = registry.list_summaries(plugin_name)
+        return jsonify(summaries)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@api_bp.route("/plugins/<plugin_name>/nodes/<node_name>", methods=["GET"])
+def get_node_spec(plugin_name: str, node_name: str):
+    """GET /plugins/<plugin>/nodes/<node> — full protocol spec of a single node.
+
+    Returns everything the Agent needs to wire this node into a Graph:
+      input_specs (every input with artifact_type, required flag, description),
+      output_spec (key, artifact_type, description),
+      parameter_specs (every parameter with type, required flag, default, description).
+    """
+    registry = get_registry()
+    try:
+        spec = registry.get_spec(plugin_name, node_name)
+        return jsonify(spec)
     except Exception as e:
         return jsonify({"error": str(e)}), 404
 
 
 @api_bp.route("/plugins/<plugin_name>/actions", methods=["GET"])
 def list_plugin_actions(plugin_name: str):
-    """GET /plugins/<plugin>/actions — legacy alias, redirects to /nodes."""
+    """GET /plugins/<plugin>/actions — legacy alias, returns summaries (same as /nodes)."""
     return list_plugin_nodes(plugin_name)
+
+@api_bp.route("/plugins/<plugin_name>/actions/<node_name>", methods=["GET"])
+def get_action_spec(plugin_name: str, node_name: str):
+    """GET /plugins/<plugin>/actions/<node> — legacy alias, returns full spec."""
+    return get_node_spec(plugin_name, node_name)
 
 
 @api_bp.route("/capabilities", methods=["GET"])

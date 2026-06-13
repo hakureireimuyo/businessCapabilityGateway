@@ -34,7 +34,6 @@ class GraphValidator:
         errors.extend(self._check_type_compatibility(graph))
         errors.extend(self._check_cycles(graph))
         errors.extend(self._check_outputs(graph))
-        errors.extend(self._check_business_rules(graph))
         return errors
 
     def validate_or_raise(self, graph: Graph) -> None:
@@ -174,15 +173,3 @@ class GraphValidator:
                 })
         return errors
 
-    # Layer 7: Business rules
-    def _check_business_rules(self, graph: Graph) -> list[dict]:
-        errors = []
-        for node_id, gn in graph.nodes.items():
-            try:
-                self._registry.get_node(graph.plugin, gn.node_name)
-            except Exception:
-                errors.append({
-                    "layer": "CROSS_PLUGIN", "node_id": node_id,
-                    "message": f"Node '{gn.node_name}' not in plugin '{graph.plugin}'",
-                })
-        return errors

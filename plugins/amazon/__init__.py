@@ -1,1 +1,1 @@
-"""Amazon 插件"""
+"""Amazon plugin"""

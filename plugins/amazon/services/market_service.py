@@ -1,14 +1,21 @@
-"""Amazon 插件 —— 业务服务层"""
+"""Amazon plugin — business service layer
+
+All business logic (statistics, scoring, analysis algorithms) lives here.
+Services receive plain Python data structures (not Artifacts) and return
+plain dicts.  See plugins/amazon/nodes/ for the Node layer that calls these.
+"""
 
 from plugins.amazon.repository.product_repository import ProductCollection
 
 
 class MarketService:
-    """市场分析服务 —— 负责业务逻辑、统计分析、评分算法"""
+    """Statistical analysis and scoring for Amazon product data."""
+
+    # ---- market analysis ----
 
     @staticmethod
     def analyze_market(products: ProductCollection) -> dict:
-        """市场分析：计算市场规模、均价、竞争情况"""
+        """Compute market statistics: size, avg price, competition score (0-100), sales distribution."""
         if len(products) == 0:
             return {
                 "market_size": 0,
@@ -56,7 +63,7 @@ class MarketService:
 
     @staticmethod
     def find_opportunities(products: ProductCollection, max_review: int = 100) -> dict:
-        """机会分析：寻找低竞争高需求的产品机会"""
+        """Find low-competition, high-opportunity products based on review count and rating."""
         if len(products) == 0:
             return {"opportunity_count": 0, "opportunities": []}
 
@@ -91,7 +98,7 @@ class MarketService:
 
     @staticmethod
     def competition_analysis(products: ProductCollection) -> dict:
-        """竞争分析：评估市场竞争格局"""
+        """Assess competition landscape: high/low-end distribution, dominant players, entry barrier."""
         if len(products) == 0:
             return {
                 "total_competitors": 0,
@@ -129,4 +136,62 @@ class MarketService:
             "avg_rating": products.avg_rating(),
             "dominant_players": dominant,
             "entry_barrier_score": barrier,
+        }
+
+    # ---- sales analysis ----
+
+    @staticmethod
+    def analyze_sales(products: ProductCollection) -> dict:
+        """Compute sales statistics: total, avg, max, product count."""
+        if len(products) == 0:
+            return {"total_sales": 0, "avg_sales": 0.0, "max_sales": 0, "product_count": 0}
+
+        sales_values = [p.monthly_sales for p in products]
+        return {
+            "total_sales": sum(sales_values),
+            "avg_sales": round(sum(sales_values) / len(sales_values), 1),
+            "max_sales": max(sales_values),
+            "product_count": len(products),
+        }
+
+    # ---- review analysis ----
+
+    @staticmethod
+    def analyze_reviews(products: ProductCollection) -> dict:
+        """Compute review statistics: avg rating, total reviews, avg per product."""
+        if len(products) == 0:
+            return {"avg_rating": 0.0, "total_reviews": 0, "avg_reviews": 0.0, "product_count": 0}
+
+        ratings = [p.review_rating for p in products]
+        reviews = [p.review_count for p in products]
+        return {
+            "avg_rating": round(sum(ratings) / len(ratings), 2),
+            "total_reviews": sum(reviews),
+            "avg_reviews": round(sum(reviews) / len(reviews), 1),
+            "product_count": len(products),
+        }
+
+    # ---- market score ----
+
+    @staticmethod
+    def compute_market_score(sales_data: dict, review_data: dict, method: str = "weighted") -> dict:
+        """Aggregate sales and review metrics into a composite market signal (0-100)."""
+        total_sales = sales_data.get("total_sales", 0)
+        avg_rating = review_data.get("avg_rating", 0)
+        product_count = sales_data.get("product_count", 0)
+
+        sales_normalized = min(100, int(total_sales / 100)) if total_sales > 0 else 0
+        rating_normalized = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 0
+
+        if method == "simple":
+            signal = int((sales_normalized + rating_normalized) / 2)
+        else:
+            signal = int(sales_normalized * 0.4 + rating_normalized * 0.6)
+
+        return {
+            "market_signal_score": signal,
+            "sales_contribution": sales_normalized,
+            "rating_contribution": rating_normalized,
+            "product_count": product_count,
+            "method": method,
         }

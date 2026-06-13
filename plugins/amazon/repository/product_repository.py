@@ -1,11 +1,16 @@
-"""Amazon 插件 —— 数据访问层"""
+"""Amazon plugin — data access layer
+
+Defines the Product data model, ProductCollection (immutable, chainable container),
+and ProductRepository.  For the Service layer that consumes these, see
+plugins/amazon/services/market_service.py.
+"""
 
 from dataclasses import dataclass, field
 
 
 @dataclass
 class Product:
-    """产品数据模型"""
+    """Product data model."""
     asin: str
     title: str
     keyword: str
@@ -17,7 +22,7 @@ class Product:
 
 
 class ProductCollection:
-    """产品集合 —— 内存中的数据容器，支持链式过滤"""
+    """Immutable in-memory product container with chainable filter/sort/aggregate methods."""
 
     def __init__(self, products: list[Product] | None = None):
         self._products: list[Product] = products or []
@@ -80,7 +85,7 @@ class ProductCollection:
     def limit(self, n: int) -> "ProductCollection":
         return ProductCollection(self._products[:n])
 
-    # 聚合方法
+    # ---- aggregation ----
     def avg_price(self) -> float:
         if not self._products:
             return 0.0
@@ -101,7 +106,7 @@ class ProductCollection:
         return (min(prices), max(prices))
 
     def to_summary(self) -> dict:
-        """转为摘要（不含原始产品数据）"""
+        """Return a summary dict (counts / averages only, no raw product data)."""
         return {
             "count": len(self._products),
             "avg_price": self.avg_price(),
@@ -111,7 +116,7 @@ class ProductCollection:
         }
 
 
-# ========== 模拟数据 ==========
+# ========== mock data ==========
 
 _MOCK_PRODUCTS: list[Product] = [
     Product("B001", "Halloween Garland LED Decor", "halloween garland", 15.99, 234, 4.5, "Decor", 520),
@@ -138,17 +143,17 @@ _MOCK_PRODUCTS: list[Product] = [
 
 
 class ProductRepository:
-    """产品数据仓库 —— 仅负责数据获取，不包含业务逻辑"""
+    """Data access — returns ProductCollection, no business logic."""
 
     def __init__(self):
-        self._products: list[Product] = list(_MOCK_PRODUCTS)  # 复制一份
+        self._products: list[Product] = list(_MOCK_PRODUCTS)
 
     def get_all(self) -> ProductCollection:
-        """获取全部产品"""
+        """Return all products."""
         return ProductCollection(list(self._products))
 
     def search_by_keyword(self, keyword: str) -> ProductCollection:
-        """按关键词搜索产品（模糊匹配）"""
+        """Fuzzy-search products by keyword (matches against title + keyword fields)."""
         keyword_lower = keyword.lower()
         matched = [
             p for p in self._products
@@ -158,6 +163,6 @@ class ProductRepository:
         return ProductCollection(matched)
 
     def search_by_category(self, category: str) -> ProductCollection:
-        """按分类搜索"""
+        """Exact-match search by category."""
         matched = [p for p in self._products if p.category == category]
         return ProductCollection(matched)

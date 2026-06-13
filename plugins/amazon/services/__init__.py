@@ -1,1 +1,1 @@
-"""Amazon 插件 - 业务服务"""
+"""Amazon plugin — business services"""

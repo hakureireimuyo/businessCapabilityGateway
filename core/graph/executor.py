@@ -123,7 +123,7 @@ class GraphExecutor:
             len(completed) - len(failed), len(graph.nodes), len(failed), elapsed,
         )
 
-        if failed and not result:
+        if failed:
             first = list(failed.keys())[0]
             raise ExecutionFailedError(first, failed[first])
 

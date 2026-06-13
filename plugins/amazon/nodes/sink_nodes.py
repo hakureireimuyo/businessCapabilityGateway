@@ -1,10 +1,12 @@
 """Amazon Plugin — Analysis & Output Nodes
 
 These nodes consume data and produce final structured results.
-In the new protocol, there is no Sink type — these are just nodes
-that happen to be graph endpoints.
+They follow the pattern: unpack Artifact → call Service → pack result into Artifact.
+
+For the Service layer, see plugins/amazon/services/market_service.py.
 """
 
+import json
 from typing import Any
 
 from core.protocol.node import Node
@@ -188,17 +190,7 @@ class SalesAnalysisNode(Node):
         context: ExecutionContext,
     ) -> Artifact:
         products: ProductData = inputs["products"].data
-
-        if len(products) == 0:
-            result = {"total_sales": 0, "avg_sales": 0.0, "max_sales": 0, "product_count": 0}
-        else:
-            sales_values = [p.monthly_sales for p in products]
-            result = {
-                "total_sales": sum(sales_values),
-                "avg_sales": round(sum(sales_values) / len(sales_values), 1),
-                "max_sales": max(sales_values),
-                "product_count": len(products),
-            }
+        result = MarketService.analyze_sales(products)
 
         return Artifact(
             key=self.output_spec.key,
@@ -239,18 +231,7 @@ class ReviewAnalysisNode(Node):
         context: ExecutionContext,
     ) -> Artifact:
         products: ProductData = inputs["products"].data
-
-        if len(products) == 0:
-            result = {"avg_rating": 0.0, "total_reviews": 0, "product_count": 0}
-        else:
-            ratings = [p.review_rating for p in products]
-            reviews = [p.review_count for p in products]
-            result = {
-                "avg_rating": round(sum(ratings) / len(ratings), 2),
-                "total_reviews": sum(reviews),
-                "avg_reviews": round(sum(reviews) / len(reviews), 1),
-                "product_count": len(products),
-            }
+        result = MarketService.analyze_reviews(products)
 
         return Artifact(
             key=self.output_spec.key,
@@ -306,28 +287,7 @@ class MarketScoreNode(Node):
         sales_data = inputs["sales"].data
         review_data = inputs["reviews"].data
         method = params.get("method", "weighted")
-
-        # Simple composite score
-        total_sales = sales_data.get("total_sales", 0)
-        avg_rating = review_data.get("avg_rating", 0)
-        product_count = sales_data.get("product_count", 0)
-
-        # Market signal: 0-100 composite
-        sales_normalized = min(100, int(total_sales / 100)) if total_sales > 0 else 0
-        rating_normalized = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 0
-
-        if method == "simple":
-            signal = int((sales_normalized + rating_normalized) / 2)
-        else:
-            signal = int(sales_normalized * 0.4 + rating_normalized * 0.6)
-
-        result = {
-            "market_signal_score": signal,
-            "sales_contribution": sales_normalized,
-            "rating_contribution": rating_normalized,
-            "product_count": product_count,
-            "method": method,
-        }
+        result = MarketService.compute_market_score(sales_data, review_data, method)
 
         return Artifact(
             key=self.output_spec.key,
@@ -428,7 +388,6 @@ class ReportOutputNode(Node):
             f"## Results",
             f"```json",
         ]
-        import json
         md_lines.append(json.dumps(source.data, indent=2, ensure_ascii=False))
         md_lines.append("```")
 

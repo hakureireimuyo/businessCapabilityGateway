@@ -89,19 +89,3 @@ class InvalidGraphError(GatewayException):
         if len(errors) > 3:
             detail += f" ... and {len(errors) - 3} more"
         super().__init__("INVALID_GRAPH", detail)
-
-
-class SandboxASTError(GatewayException):
-    """AST validation failure in Agent script."""
-    def __init__(self, message: str, lineno: int | None = None):
-        loc = f" (line {lineno})" if lineno else ""
-        super().__init__("INVALID_SCRIPT", f"{message}{loc}")
-
-
-class SandboxTimeoutError(GatewayException):
-    """Agent script execution timed out."""
-    def __init__(self, timeout: float = 10):
-        super().__init__(
-            "EXECUTION_TIMEOUT",
-            f"Script execution timed out after {timeout:.0f}s",
-        )

@@ -57,8 +57,27 @@ class Node(ABC):
         """
         ...
 
+    def to_summary_dict(self) -> dict[str, Any]:
+        """Generate a lightweight summary — just enough for Agent to decide
+        which nodes to inspect further.  Not the full protocol spec."""
+        has_inputs = bool(self.input_specs)
+        output_type = self.output_spec.artifact_type.__name__ if self.output_spec else None
+        output_key = self.output_spec.key if self.output_spec else None
+
+        return {
+            "name": self.name,
+            "plugin": self.plugin,
+            "description": self.description,
+            "is_entry": not has_inputs,
+            "input_count": len(self.input_specs),
+            "output_key": output_key,
+            "output_type": output_type,
+        }
+
     def to_spec_dict(self) -> dict[str, Any]:
-        """Generate API-friendly node specification for capability discovery."""
+        """Generate the full protocol specification for a single node.
+        Includes every input/parameter/output with full type and constraint detail.
+        Use GET /plugins/<plugin>/nodes/<node> to access this."""
         spec: dict[str, Any] = {
             "name": self.name,
             "plugin": self.plugin,

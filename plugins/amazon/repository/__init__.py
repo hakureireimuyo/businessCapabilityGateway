@@ -1,1 +1,1 @@
-"""Amazon 插件 - 数据访问"""
+"""Amazon plugin — data access"""
