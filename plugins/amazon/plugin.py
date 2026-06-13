@@ -1,26 +1,40 @@
-"""Amazon 插件 —— 入口"""
+"""Amazon plugin — entry point"""
 
-from core.node_registry import register_nodes
+from core.registry.node_registry import register_nodes
 from plugins.amazon.nodes.source_nodes import KeywordSearchNode, CategorySearchNode
 from plugins.amazon.nodes.transform_nodes import FilterNode, SortNode
 from plugins.amazon.nodes.sink_nodes import (
     MarketAnalysisNode,
     OpportunityAnalysisNode,
     CompetitionAnalysisNode,
+    SalesAnalysisNode,
+    ReviewAnalysisNode,
+    MarketScoreNode,
+    ChartOutputNode,
+    ReportOutputNode,
+    JSONOutputNode,
 )
 
 
 def register():
-    """向网关注册 Amazon 插件的所有 Node"""
+    """Register all Amazon plugin nodes with the gateway."""
     register_nodes("amazon", [
-        # Source
+        # Data fetching (graph entry points)
         KeywordSearchNode(),
         CategorySearchNode(),
-        # Transform
+        # Data transformation
         FilterNode(),
         SortNode(),
-        # Sink
+        # Analysis
         MarketAnalysisNode(),
         OpportunityAnalysisNode(),
         CompetitionAnalysisNode(),
+        SalesAnalysisNode(),
+        ReviewAnalysisNode(),
+        # Multi-input aggregation
+        MarketScoreNode(),
+        # Output
+        ChartOutputNode(),
+        ReportOutputNode(),
+        JSONOutputNode(),
     ])

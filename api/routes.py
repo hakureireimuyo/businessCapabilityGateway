@@ -1,11 +1,13 @@
-"""API 路由定义"""
+"""API routes — HTTP interface for Agent interaction"""
 
 import json
+import time
 from flask import Blueprint, request, jsonify
 
-from core.dsl_parser import parse_bcl
-from core.pipeline_executor import PipelineExecutor
-from core.node_registry import get_registry
+from core.graph.model import Graph
+from core.graph.validator import GraphValidator
+from core.graph.executor import GraphExecutor
+from core.registry.node_registry import get_registry
 from core.exceptions import GatewayException
 from core.logger import get_logger
 
@@ -14,85 +16,145 @@ logger = get_logger(__name__)
 api_bp = Blueprint("api", __name__, url_prefix="")
 
 
+# ================================================================
+# Discovery endpoints
+# ================================================================
+
 @api_bp.route("/plugins", methods=["GET"])
 def list_plugins():
-    """GET /plugins —— 列出所有已加载的插件名"""
+    """GET /plugins — list all loaded plugin names."""
     registry = get_registry()
     plugins = registry.get_all_plugins()
-    logger.info("列出插件: %s", plugins)
+    logger.info("List plugins: %s", plugins)
     return jsonify(plugins)
+
+
+@api_bp.route("/plugins/<plugin_name>/nodes", methods=["GET"])
+def list_plugin_nodes(plugin_name: str):
+    """GET /plugins/<plugin>/nodes — list node specs for a plugin.
+
+    Returns the protocol specification for each registered node:
+      - name, description
+      - input_specs (what Artifacts it consumes)
+      - output_spec (what Artifact it produces)
+      - parameter_specs (what literal parameters it accepts)
+    """
+    registry = get_registry()
+    try:
+        specs = registry.list_specs(plugin_name)
+        return jsonify(specs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
 
 
 @api_bp.route("/plugins/<plugin_name>/actions", methods=["GET"])
 def list_plugin_actions(plugin_name: str):
-    """GET /plugins/<plugin>/actions —— 列出插件的能力/节点"""
-    registry = get_registry()
-    try:
-        capabilities = registry.get_capabilities(plugin_name)
-        return jsonify(capabilities["actions"])
-    except Exception:
-        return jsonify({"error": f"插件 '{plugin_name}' 未找到"}), 404
+    """GET /plugins/<plugin>/actions — legacy alias, redirects to /nodes."""
+    return list_plugin_nodes(plugin_name)
 
 
 @api_bp.route("/capabilities", methods=["GET"])
 def all_capabilities():
-    """GET /capabilities —— 列出所有插件的能力"""
+    """GET /capabilities — list all plugins' capabilities."""
     registry = get_registry()
     return jsonify(registry.get_capabilities())
 
 
+# ================================================================
+# Execution endpoint
+# ================================================================
+
 @api_bp.route("/execute", methods=["POST"])
-def execute_pipeline():
-    """POST /execute —— 执行 BCL 管道指令
+def execute_graph():
+    """POST /execute — execute a graph.
 
-    Content-Type: text/plain
-    Body: BCL 指令字符串
+    Content-Type: application/json
+    Body: JSON Graph description
+
+    Example:
+    {
+      "plugin": "amazon",
+      "nodes": {
+        "s1": {"node_name": "keyword_search", "params": {"keyword": "halloween"}},
+        "a1": {"node_name": "market_analysis", "params": {}}
+      },
+      "edges": [
+        {"from": "s1", "from_output": "products", "to": "a1", "to_input": "products"}
+      ],
+      "outputs": ["a1"]
+    }
     """
-    bcl_string = request.get_data(as_text=True)
+    raw_body = request.get_data(as_text=True)
 
-    if not bcl_string or not bcl_string.strip():
+    if not raw_body or not raw_body.strip():
         return jsonify({
             "success": False,
             "error": {
                 "code": "EMPTY_REQUEST",
-                "message": "请求体不能为空"
+                "message": "Request body is empty",
             }
         }), 400
 
-    logger.info("收到执行请求:\n%s", bcl_string)
+    logger.info("Execute request: %s", raw_body[:200])
 
     try:
-        # 1. 解析 DSL
-        pipeline = parse_bcl(bcl_string)
+        # Parse JSON body
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError as e:
+            return jsonify({
+                "success": False,
+                "error": {
+                    "code": "INVALID_JSON",
+                    "message": f"Invalid JSON: {e}",
+                }
+            }), 400
 
-        # 2. 执行管道
-        executor = PipelineExecutor()
-        result = executor.execute(pipeline)
+        # Build graph from JSON
+        graph = Graph.from_dict(body)
 
-        # 3. 返回
-        return jsonify(result.to_dict()), 200 if result.success else 400
+        # Validate
+        validator = GraphValidator()
+        errors = validator.validate(graph)
+        if errors:
+            return jsonify({
+                "success": False,
+                "error": {
+                    "code": "INVALID_GRAPH",
+                    "message": f"Graph validation failed: {len(errors)} error(s)",
+                    "errors": errors,
+                }
+            }), 400
+
+        # Execute
+        executor = GraphExecutor()
+        result_data = executor.execute(graph)
+
+        return jsonify({
+            "success": True,
+            "data": result_data,
+            "message": f"Graph executed ({graph.node_count()} nodes)",
+        }), 200
 
     except GatewayException as e:
-        logger.error("网关异常: [%s] %s", e.code, e.message)
+        logger.error("Gateway error: [%s] %s", e.code, e.message)
         return jsonify({
             "success": False,
-            "error": {
-                "code": e.code,
-                "message": e.message,
-            }
+            "error": {"code": e.code, "message": e.message},
         }), 400
     except Exception as e:
-        logger.exception("未预期异常")
+        logger.exception("Unexpected error")
         return jsonify({
             "success": False,
-            "error": {
-                "code": "INTERNAL_ERROR",
-                "message": str(e),
-            }
+            "error": {"code": "INTERNAL_ERROR", "message": str(e)},
         }), 500
 
 
+# ================================================================
+# Health
+# ================================================================
+
 @api_bp.route("/health", methods=["GET"])
 def health():
-    """GET /health —— 健康检查"""
+    """GET /health — health check."""
     return jsonify({"status": "ok"})

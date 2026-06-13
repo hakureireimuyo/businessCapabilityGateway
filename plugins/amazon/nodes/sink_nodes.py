@@ -1,77 +1,479 @@
-"""Amazon Plugin - Sink Nodes (output final results)"""
+"""Amazon Plugin — Analysis & Output Nodes
 
-from core.node import Node, NodeType
-from core.execution_context import ExecutionContext
-from plugins.amazon.repository.product_repository import ProductCollection
+These nodes consume data and produce final structured results.
+In the new protocol, there is no Sink type — these are just nodes
+that happen to be graph endpoints.
+"""
+
+from typing import Any
+
+from core.protocol.node import Node
+from core.protocol.artifact import Artifact, ArtifactType, InputSpec, OutputSpec, ParameterSpec
+from core.runtime.context import ExecutionContext
+from plugins.amazon.repository.product_repository import ProductCollection as ProductData
 from plugins.amazon.services.market_service import MarketService
+from plugins.amazon.artifact_types import (
+    ProductCollection,
+    MarketAnalysis,
+    OpportunityList,
+    CompetitionAnalysis,
+    SalesMetrics,
+    ReviewMetrics,
+    MarketSignal,
+    ChartData,
+    ReportData,
+    JSONData,
+)
 
+
+# ================================================================
+# Analysis Nodes
+# ================================================================
 
 class MarketAnalysisNode(Node):
-    """Analyze market: size, avg price, competition score, sales distribution"""
+    """Analyze market: size, avg price, competition score."""
 
     name = "market_analysis"
-    description = "Analyze market competition: size, avg price, competition score (0-100, lower = blue ocean), sales distribution"
-    node_type = NodeType.SINK
-    parameters = {}
-    input_schema = {"type": "ProductCollection"}
-    output_schema = {
-        "market_size": "integer",
-        "avg_price": "float",
-        "avg_rating": "float",
-        "competition_score": "integer (0-100, lower = less competition)",
-        "total_monthly_sales": "integer",
-        "price_range": "[min, max]",
+    plugin = "amazon"
+    description = "Analyze market competition: size, avg price, competition score (0-100), sales distribution"
+
+    input_specs = {
+        "products": InputSpec(
+            name="products",
+            artifact_type=ProductCollection,
+            required=True,
+            description="Products to analyze",
+        ),
     }
 
-    def execute(self, context: ExecutionContext) -> ExecutionContext:
-        products: ProductCollection = context.data
+    output_spec = OutputSpec(
+        key="market_analysis",
+        artifact_type=MarketAnalysis,
+        description="Market analysis result",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        products: ProductData = inputs["products"].data
         result = MarketService.analyze_market(products)
-        context.result = result
-        return context
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=MarketAnalysis,
+            data=result,
+            produced_by=self.name,
+        )
 
 
 class OpportunityAnalysisNode(Node):
-    """Find low-competition high-opportunity products"""
+    """Find low-competition high-opportunity products."""
 
-    name = "find_opportunities"
+    name = "opportunity_analysis"
+    plugin = "amazon"
     description = "Find products with low reviews and high ratings as market opportunities"
-    node_type = NodeType.SINK
-    parameters = {
-        "max_review": {"type": "integer", "required": False, "default": 100, "description": "Max review count threshold"},
-    }
-    input_schema = {"type": "ProductCollection"}
-    output_schema = {
-        "opportunity_count": "integer",
-        "opportunities": "list of opportunity objects with scores",
+
+    input_specs = {
+        "products": InputSpec(
+            name="products",
+            artifact_type=ProductCollection,
+            required=True,
+            description="Products to scan for opportunities",
+        ),
     }
 
-    def execute(self, context: ExecutionContext) -> ExecutionContext:
-        products: ProductCollection = context.data
-        max_review = int(context.current_params.get("max_review", "100"))
+    output_spec = OutputSpec(
+        key="opportunity_list",
+        artifact_type=OpportunityList,
+        description="Identified opportunities",
+    )
+
+    parameter_specs = {
+        "max_review": ParameterSpec("max_review", int, required=False, default=100,
+                                    description="Max review count threshold for opportunity"),
+    }
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        products: ProductData = inputs["products"].data
+        max_review = params.get("max_review", 100)
         result = MarketService.find_opportunities(products, max_review)
-        context.result = result
-        return context
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=OpportunityList,
+            data=result,
+            produced_by=self.name,
+        )
 
 
 class CompetitionAnalysisNode(Node):
-    """Assess market competition landscape"""
+    """Assess market competition landscape."""
 
     name = "competition_analysis"
-    description = "Assess market competition: high/low-end distribution, dominant players, entry barrier score (0-100)"
-    node_type = NodeType.SINK
-    parameters = {}
-    input_schema = {"type": "ProductCollection"}
-    output_schema = {
-        "total_competitors": "integer",
-        "high_end_count": "integer",
-        "low_end_count": "integer",
-        "avg_price": "float",
-        "dominant_players": "integer",
-        "entry_barrier_score": "integer (0-100)",
+    plugin = "amazon"
+    description = "Assess market competition: high/low-end distribution, dominant players, entry barrier score"
+
+    input_specs = {
+        "products": InputSpec(
+            name="products",
+            artifact_type=ProductCollection,
+            required=True,
+            description="Products to analyze",
+        ),
     }
 
-    def execute(self, context: ExecutionContext) -> ExecutionContext:
-        products: ProductCollection = context.data
+    output_spec = OutputSpec(
+        key="competition_analysis",
+        artifact_type=CompetitionAnalysis,
+        description="Competition analysis result",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        products: ProductData = inputs["products"].data
         result = MarketService.competition_analysis(products)
-        context.result = result
-        return context
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=CompetitionAnalysis,
+            data=result,
+            produced_by=self.name,
+        )
+
+
+class SalesAnalysisNode(Node):
+    """Statistical analysis of sales data."""
+
+    name = "sales_analysis"
+    plugin = "amazon"
+    description = "Analyze sales distribution: total sales, avg sales, top sellers"
+
+    input_specs = {
+        "products": InputSpec(
+            name="products",
+            artifact_type=ProductCollection,
+            required=True,
+            description="Products to analyze sales for",
+        ),
+    }
+
+    output_spec = OutputSpec(
+        key="sales_metrics",
+        artifact_type=SalesMetrics,
+        description="Sales analysis metrics",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        products: ProductData = inputs["products"].data
+
+        if len(products) == 0:
+            result = {"total_sales": 0, "avg_sales": 0.0, "max_sales": 0, "product_count": 0}
+        else:
+            sales_values = [p.monthly_sales for p in products]
+            result = {
+                "total_sales": sum(sales_values),
+                "avg_sales": round(sum(sales_values) / len(sales_values), 1),
+                "max_sales": max(sales_values),
+                "product_count": len(products),
+            }
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=SalesMetrics,
+            data=result,
+            produced_by=self.name,
+        )
+
+
+class ReviewAnalysisNode(Node):
+    """Statistical analysis of review data."""
+
+    name = "review_analysis"
+    plugin = "amazon"
+    description = "Analyze review distribution: avg rating, review count spread, rating histogram"
+
+    input_specs = {
+        "products": InputSpec(
+            name="products",
+            artifact_type=ProductCollection,
+            required=True,
+            description="Products to analyze reviews for",
+        ),
+    }
+
+    output_spec = OutputSpec(
+        key="review_metrics",
+        artifact_type=ReviewMetrics,
+        description="Review analysis metrics",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        products: ProductData = inputs["products"].data
+
+        if len(products) == 0:
+            result = {"avg_rating": 0.0, "total_reviews": 0, "product_count": 0}
+        else:
+            ratings = [p.review_rating for p in products]
+            reviews = [p.review_count for p in products]
+            result = {
+                "avg_rating": round(sum(ratings) / len(ratings), 2),
+                "total_reviews": sum(reviews),
+                "avg_reviews": round(sum(reviews) / len(reviews), 1),
+                "product_count": len(products),
+            }
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=ReviewMetrics,
+            data=result,
+            produced_by=self.name,
+        )
+
+
+class MarketScoreNode(Node):
+    """Aggregate multiple metrics into a market signal.
+
+    This demonstrates a multi-input node: it consumes two distinct
+    metric types and produces an aggregated result.
+    """
+
+    name = "market_score"
+    plugin = "amazon"
+    description = "Compute aggregate market score from sales and review metrics"
+
+    input_specs = {
+        "sales": InputSpec(
+            name="sales",
+            artifact_type=SalesMetrics,
+            required=True,
+            description="Sales metrics input",
+        ),
+        "reviews": InputSpec(
+            name="reviews",
+            artifact_type=ReviewMetrics,
+            required=True,
+            description="Review metrics input",
+        ),
+    }
+
+    output_spec = OutputSpec(
+        key="market_signal",
+        artifact_type=MarketSignal,
+        description="Aggregated market signal",
+    )
+
+    parameter_specs = {
+        "method": ParameterSpec("method", str, required=False, default="weighted",
+                                description="Scoring method: weighted | simple"),
+    }
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        sales_data = inputs["sales"].data
+        review_data = inputs["reviews"].data
+        method = params.get("method", "weighted")
+
+        # Simple composite score
+        total_sales = sales_data.get("total_sales", 0)
+        avg_rating = review_data.get("avg_rating", 0)
+        product_count = sales_data.get("product_count", 0)
+
+        # Market signal: 0-100 composite
+        sales_normalized = min(100, int(total_sales / 100)) if total_sales > 0 else 0
+        rating_normalized = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 0
+
+        if method == "simple":
+            signal = int((sales_normalized + rating_normalized) / 2)
+        else:
+            signal = int(sales_normalized * 0.4 + rating_normalized * 0.6)
+
+        result = {
+            "market_signal_score": signal,
+            "sales_contribution": sales_normalized,
+            "rating_contribution": rating_normalized,
+            "product_count": product_count,
+            "method": method,
+        }
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=MarketSignal,
+            data=result,
+            produced_by=self.name,
+        )
+
+
+# ================================================================
+# Output Nodes (graph endpoints)
+# ================================================================
+
+class ChartOutputNode(Node):
+    """Generate chart data from any metric."""
+
+    name = "chart_output"
+    plugin = "amazon"
+    description = "Format analysis results as chart visualization data"
+
+    input_specs = {
+        "data": InputSpec(
+            name="data",
+            artifact_type=ArtifactType,
+            required=True,
+            description="Any analysis result to format as chart",
+        ),
+    }
+
+    output_spec = OutputSpec(
+        key="chart",
+        artifact_type=ChartData,
+        description="Chart-ready data",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        source = inputs["data"]
+        # Pass through with chart metadata wrapper
+        chart_data = {
+            "type": "bar",
+            "source": source.key,
+            "source_type": source.type.__name__,
+            "values": source.data,
+            "metadata": source.metadata,
+        }
+        return Artifact(
+            key=self.output_spec.key,
+            type=ChartData,
+            data=chart_data,
+            produced_by=self.name,
+        )
+
+
+class ReportOutputNode(Node):
+    """Generate markdown report from any metric."""
+
+    name = "report_output"
+    plugin = "amazon"
+    description = "Format analysis results as a markdown report"
+
+    input_specs = {
+        "data": InputSpec(
+            name="data",
+            artifact_type=ArtifactType,
+            required=True,
+            description="Any analysis result to format as report",
+        ),
+    }
+
+    output_spec = OutputSpec(
+        key="report",
+        artifact_type=ReportData,
+        description="Markdown report",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        source = inputs["data"]
+        md_lines = [
+            f"# Analysis Report: {source.key}",
+            f"",
+            f"Type: {source.type.__name__}",
+            f"Produced by: {source.produced_by}",
+            f"",
+            f"## Results",
+            f"```json",
+        ]
+        import json
+        md_lines.append(json.dumps(source.data, indent=2, ensure_ascii=False))
+        md_lines.append("```")
+
+        return Artifact(
+            key=self.output_spec.key,
+            type=ReportData,
+            data="\n".join(md_lines),
+            produced_by=self.name,
+        )
+
+
+class JSONOutputNode(Node):
+    """Raw JSON output from any artifact."""
+
+    name = "json_output"
+    plugin = "amazon"
+    description = "Return analysis results as raw JSON"
+
+    input_specs = {
+        "data": InputSpec(
+            name="data",
+            artifact_type=ArtifactType,
+            required=True,
+            description="Any artifact to output as JSON",
+        ),
+    }
+
+    output_spec = OutputSpec(
+        key="json",
+        artifact_type=JSONData,
+        description="Raw JSON data",
+    )
+
+    parameter_specs = {}
+
+    def execute(
+        self,
+        inputs: dict[str, Artifact],
+        params: dict[str, Any],
+        context: ExecutionContext,
+    ) -> Artifact:
+        source = inputs["data"]
+        return Artifact(
+            key=self.output_spec.key,
+            type=JSONData,
+            data=source.data,
+            produced_by=self.name,
+        )

@@ -1,12 +1,12 @@
-"""统一响应封装"""
+"""Runtime: ActionResult — uniform API response wrapper"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
 @dataclass
 class ActionResult:
-    """所有 Action/Node 的统一返回格式"""
+    """Uniform return format for all execution results."""
     success: bool
     data: dict | None = None
     message: str = ""
